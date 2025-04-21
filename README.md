@@ -61,7 +61,7 @@ python3 log.py <日志文件路径> [选项]
 
 5. **混合使用参数**
    ```bash
-   python3 py access.log -m ip -l 500 -f ./reports
+   python3 log.py access.log -m ip -l 500 -f ./reports
    ```
 
 ### **输出结果**
