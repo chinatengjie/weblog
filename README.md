@@ -41,22 +41,27 @@ python log.py <日志文件路径> [选项]
 
 1. **分析所有日志并生成完整报告**
    ```bash
-   python log.py access.log
+   python3 log.py access.log
    ```
 
 2. **按用户代理分析，限制输出前 10 条**
    ```bash
-   python log.py access.log -m ua -l 10
+   python3 log.py access.log -m ua -l 10
    ```
 
 3. **按 IP 地址分析，并输出到指定目录**
    ```bash
-   python log.py access.log -m ip -f ./reports
+   python3 log.py access.log -m ip -f ./reports
    ```
 
 4. **仅分析用户代理，不限制条目数量**
    ```bash
-   python log.py access.log -m ua
+   python3 log.py access.log -m ua
+   ```
+
+5. **混合使用参数**
+   ```bash
+   python3 py access.log -m ip -l 500 -f ./reports
    ```
 
 ### **输出结果**
@@ -102,5 +107,5 @@ IP地址流量报告
 - **第三方库**：`chardet`（用于编码检测）
   安装方法：
   ```bash
-  pip install chardet
+  pip3 install chardet
   ```
