@@ -4,6 +4,7 @@ from collections import defaultdict
 import os
 import chardet
 from datetime import datetime
+from urllib.parse import urlparse
 
 def detect_encoding(file_path):
     with open(file_path, 'rb') as f:
@@ -13,17 +14,32 @@ def detect_encoding(file_path):
 
 def parse_log_line(line):
     pattern = r'''
-        ^(\S+)\s+                
-        .*?                      
+        ^(\S+)\s+                        # IP地址
+        .*?                              
         \[\d+/\w+/\d+:\d+:\d+:\d+ 
-        .*?"\w+\s(?:http[^"]+)?   
-        \sHTTP/\d\.\d"\s\d+\s     
-        (\d+)\s+                  
-        "[^"]*"\s+                
-        "([^"]*)"                 
+        \s+\S+\]\s+                      
+        "(\w+)\s+([^?"\s]+)[^"]*"        # 请求方法和URL
+        \s+(\d+)\s+                      # 状态码
+        (\d+)\s+                         # 传输字节数
+        "([^"]*)"\s+                     # Referer
+        "([^"]*)"                         # User-Agent
     '''
     match = re.search(pattern, line, re.VERBOSE | re.IGNORECASE)
-    return match.groups() if match else (None, None, None)
+    if match:
+        ip = match.group(1)
+        method = match.group(2)
+        url = match.group(3)
+        status = match.group(4)
+        bytes_str = match.group(5)
+        referer = match.group(6)
+        user_agent = match.group(7)
+        
+        # 简化URL，移除查询参数
+        if '?' in url:
+            url = url.split('?', 1)[0]
+        
+        return ip, bytes_str, user_agent, url, referer
+    return (None,) * 5
 
 def format_size(bytes_size):
     units = ['B', 'KB', 'MB', 'GB']
@@ -34,14 +50,11 @@ def format_size(bytes_size):
     return f"{bytes_size:.2f} TB"
 
 def generate_filename(original_path, report_type, output_dir=None):
-    # 生成基础文件名
     base_name = os.path.splitext(os.path.basename(original_path))[0]
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"{base_name}_{timestamp}_{report_type}.txt"
     
-    # 处理输出目录
     if output_dir:
-        # 创建目录（如果不存在）
         os.makedirs(output_dir, exist_ok=True)
         return os.path.join(output_dir, filename)
     return filename
@@ -51,6 +64,8 @@ def analyze_log(log_path, mode):
     ip_stats = defaultdict(
         lambda: {'traffic': 0, 'requests': 0, 'user_agents': defaultdict(int)}
     )
+    url_stats = defaultdict(lambda: {'traffic': 0, 'requests': 0})
+    referer_stats = defaultdict(lambda: {'traffic': 0, 'requests': 0})
     
     total_bytes = 0
     line_count = 0
@@ -65,8 +80,8 @@ def analyze_log(log_path, mode):
                 if not line:
                     continue
 
-                ip, bytes_str, user_agent = parse_log_line(line)
-                if not all([ip, bytes_str, user_agent]):
+                ip, bytes_str, user_agent, url, referer = parse_log_line(line)
+                if not all([ip, bytes_str, user_agent, url, referer]):
                     invalid_lines += 1
                     continue
 
@@ -86,6 +101,18 @@ def analyze_log(log_path, mode):
                     ip_stats[ip]['traffic'] += bytes_transferred
                     ip_stats[ip]['requests'] += 1
                     ip_stats[ip]['user_agents'][user_agent] += 1
+                
+                if mode in ['url', 'all']:
+                    url_stats[url]['traffic'] += bytes_transferred
+                    url_stats[url]['requests'] += 1
+                
+                if mode in ['referer', 'all']:
+                    # 简化Referer，只保留域名
+                    if referer != "-":
+                        parsed = urlparse(referer)
+                        referer = f"{parsed.scheme}://{parsed.netloc}"
+                    referer_stats[referer]['traffic'] += bytes_transferred
+                    referer_stats[referer]['requests'] += 1
 
         print(f"\n分析完成：{os.path.basename(log_path)}")
         print(f"文件编码: {encoding}")
@@ -96,6 +123,8 @@ def analyze_log(log_path, mode):
         return {
             'ua_stats': ua_stats,
             'ip_stats': ip_stats,
+            'url_stats': url_stats,
+            'referer_stats': referer_stats,
             'total_bytes': total_bytes,
             'line_count': line_count,
             'invalid_lines': invalid_lines
@@ -119,6 +148,7 @@ def generate_ua_report(data, output_path, limit=None):
         f.write("User-Agent流量报告\n")
         f.write("="*60 + "\n")
         f.write(f"生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"总流量: {format_size(data['total_bytes'])}\n")  # 新增总流量显示
         f.write(f"显示条目: {len(sorted_ua)}/{len(data['ua_stats'])}\n")
         f.write(f"{'排名':<5}{'流量占比':<10}{'流量总量':<15}{'请求数':<10}User-Agent\n")
         f.write("-"*90 + "\n")
@@ -130,8 +160,7 @@ def generate_ua_report(data, output_path, limit=None):
                 f"{percent:>6.2f}%  "
                 f"{format_size(stats['traffic']):<15} "
                 f"{stats['requests']:<10} "
-                #f"{ua[:80]}{'...' if len(ua)>80 else ''}\n"/# 截断逻辑
-                f"{ua}\n"  # 移除了截断逻辑
+                f"{ua}\n"
             )
 
 def generate_ip_report(data, output_path, limit=None):
@@ -148,6 +177,7 @@ def generate_ip_report(data, output_path, limit=None):
         f.write("IP地址流量报告\n")
         f.write("="*60 + "\n")
         f.write(f"生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"总流量: {format_size(data['total_bytes'])}\n")  # 新增总流量显示
         f.write(f"显示条目: {len(sorted_ips)}/{len(data['ip_stats'])}\n")
         f.write(f"{'排名':<5}{'IP地址':<18}{'流量占比':<10}{'流量总量':<15}{'请求数':<10}主要User-Agent\n")
         f.write("-"*100 + "\n")
@@ -170,18 +200,76 @@ def generate_ip_report(data, output_path, limit=None):
                 f"{ua_str}\n"
             )
 
+def generate_url_report(data, output_path, limit=None):
+    sorted_urls = sorted(
+        data['url_stats'].items(),
+        key=lambda x: x[1]['traffic'],
+        reverse=True
+    )
+    
+    if limit and limit > 0:
+        sorted_urls = sorted_urls[:limit]
+
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write("URL访问统计报告\n")
+        f.write("="*60 + "\n")
+        f.write(f"生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"总流量: {format_size(data['total_bytes'])}\n")  # 新增总流量显示
+        f.write(f"显示条目: {len(sorted_urls)}/{len(data['url_stats'])}\n")
+        f.write(f"{'排名':<5}{'流量占比':<10}{'流量总量':<15}{'请求数':<10}访问URL\n")
+        f.write("-"*90 + "\n")
+        
+        for rank, (url, stats) in enumerate(sorted_urls, 1):
+            percent = stats['traffic'] / data['total_bytes'] * 100
+            f.write(
+                f"#{rank:<4} "
+                f"{percent:>6.2f}%  "
+                f"{format_size(stats['traffic']):<15} "
+                f"{stats['requests']:<10} "
+                f"{url}\n"
+            )
+
+def generate_referer_report(data, output_path, limit=None):
+    sorted_referers = sorted(
+        data['referer_stats'].items(),
+        key=lambda x: x[1]['traffic'],
+        reverse=True
+    )
+    
+    if limit and limit > 0:
+        sorted_referers = sorted_referers[:limit]
+
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write("来路(Referer)流量统计报告\n")
+        f.write("="*60 + "\n")
+        f.write(f"生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"总流量: {format_size(data['total_bytes'])}\n")  # 新增总流量显示
+        f.write(f"显示条目: {len(sorted_referers)}/{len(data['referer_stats'])}\n")
+        f.write(f"{'排名':<5}{'流量占比':<10}{'流量总量':<15}{'请求数':<10}来源域名\n")
+        f.write("-"*90 + "\n")
+        
+        for rank, (referer, stats) in enumerate(sorted_referers, 1):
+            percent = stats['traffic'] / data['total_bytes'] * 100
+            display_referer = referer if referer != "-" else "直接访问/无来源"
+            f.write(
+                f"#{rank:<4} "
+                f"{percent:>6.2f}%  "
+                f"{format_size(stats['traffic']):<15} "
+                f"{stats['requests']:<10} "
+                f"{display_referer}\n"
+            )
+
 def main():
     parser = argparse.ArgumentParser(description='网站日志分析工具')
     parser.add_argument('log_file', help='日志文件路径')
-    parser.add_argument('-m', '--mode', choices=['ua', 'ip', 'all'], default='all',
-                      help='分析模式: ua=用户代理, ip=IP地址, all=全部（默认）')
+    parser.add_argument('-m', '--mode', choices=['ua', 'ip', 'url', 'referer', 'all'], default='all',
+                      help='分析模式: ua=用户代理, ip=IP地址, url=访问URL, referer=来路统计, all=全部（默认）')
     parser.add_argument('-l', '--limit', type=int, default=0,
                       help='限制输出条目数量（默认输出全部）')
     parser.add_argument('-f', '--output-dir', type=str, 
                       help='指定输出目录（默认当前目录）')
     args = parser.parse_args()
 
-    # 参数验证
     if args.limit < 0:
         print("错误：limit参数不能为负数")
         exit(1)
@@ -189,15 +277,24 @@ def main():
     analysis_data = analyze_log(args.log_file, args.mode)
 
     # 生成报告文件路径
-    if args.mode in ['ua', 'all']:
-        ua_path = generate_filename(args.log_file, "ua", args.output_dir)
-        generate_ua_report(analysis_data, ua_path, args.limit if args.limit > 0 else None)
-        print(f"\nUA报告已生成: {os.path.abspath(ua_path)}")
-
-    if args.mode in ['ip', 'all']:
-        ip_path = generate_filename(args.log_file, "ip", args.output_dir)
-        generate_ip_report(analysis_data, ip_path, args.limit if args.limit > 0 else None)
-        print(f"IP报告已生成: {os.path.abspath(ip_path)}")
+    report_generators = {
+        'ua': ('ua', generate_ua_report),
+        'ip': ('ip', generate_ip_report),
+        'url': ('url', generate_url_report),
+        'referer': ('referer', generate_referer_report)
+    }
+    
+    generated_reports = []
+    
+    for mode_key, (report_type, generator) in report_generators.items():
+        if args.mode in [mode_key, 'all']:
+            report_path = generate_filename(args.log_file, report_type, args.output_dir)
+            generator(analysis_data, report_path, args.limit if args.limit > 0 else None)
+            generated_reports.append((report_type, report_path))
+    
+    print("\n报告生成完成:")
+    for report_type, report_path in generated_reports:
+        print(f"  {report_type}报告: {os.path.abspath(report_path)}")
 
 if __name__ == "__main__":
     main()
